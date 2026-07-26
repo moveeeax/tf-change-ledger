@@ -1,0 +1,35 @@
+# Example policy. Copy to the root of a Terraform repository as .tf-ledger.yml.
+version: 1
+
+# The exact line an approver must comment before a protected change can merge.
+acknowledgement: "/ledger approve"
+
+# Leave false so the author of a destructive change cannot sign it off alone.
+self_approval: false
+
+protected:
+  - name: databases
+    reason: "Destroying an RDS instance loses data that backups may not cover"
+    types:
+      - aws_db_instance
+      - aws_rds_cluster
+      - aws_elasticache_replication_group
+    actions: [delete, replace]
+
+  - name: buckets-and-state
+    reason: "Object storage deletions are not recoverable once versioning lapses"
+    types:
+      - aws_s3_bucket
+      - google_storage_bucket
+    actions: [delete]
+
+  - name: identity
+    reason: "IAM removals have taken production down before"
+    types:
+      - aws_iam_role
+      - aws_iam_policy
+    actions: [delete]
+
+# Addresses here are never gated, whatever the rules above say.
+exempt:
+  - module.sandbox.*
