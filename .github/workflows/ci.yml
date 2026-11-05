@@ -16,11 +16,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ["1.24", "1.25"]
+        go: ["1.26", "1.27"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
           check-latest: true
@@ -44,7 +44,7 @@ jobs:
         run: go test -race -count=1 ./...
 
       - name: tidy is up to date
-        if: matrix.go == '1.25'
+        if: matrix.go == '1.27'
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
@@ -53,11 +53,11 @@ jobs:
     name: end-to-end smoke test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version: "1.27"
           check-latest: true
 
       - name: build the cli
