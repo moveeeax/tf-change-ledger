@@ -32,7 +32,7 @@ Early. Everything in this repository works end to end and is tested:
 go install github.com/moveeeax/tf-change-ledger/cmd/tf-change-ledger@latest
 ```
 
-Go 1.24 or newer. No runtime dependencies.
+Go 1.26 or newer. No runtime dependencies.
 
 ## Usage example
 
@@ -276,7 +276,6 @@ go vet ./...
 gofmt -l .
 ```
 
-## Licence
+## License
 
-Not decided yet. Until a `LICENSE` file exists in this repository, all rights are
-reserved.
+MIT. See [LICENSE](LICENSE).
