@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/moveeeax/tf-change-ledger/internal/ledger"
 )
 
 // bin is the compiled CLI under test. Building it once and running it for real
@@ -244,6 +246,138 @@ func TestVerifyFailsOnATamperedLedger(t *testing.T) {
 	}
 	if !strings.Contains(v.stderr, "verification failed") {
 		t.Errorf("stderr = %q", v.stderr)
+	}
+}
+
+func recordFixture(t *testing.T, led string) {
+	t.Helper()
+	if r := run(t, "record",
+		"-plan", testdata("plan-destructive.json"), "-config", testdata(".tf-ledger.yml"),
+		"-ledger", led, "-repo", "acme/platform", "-pr", "42", "-commit", "0bada55",
+		"-author", "alice", "-at", "2026-03-14T10:00:00Z", "-quiet"); r.code != 0 {
+		t.Fatalf("record exited %d: %s", r.code, r.stderr)
+	}
+}
+
+func TestHeadPrintsTheLastEntry(t *testing.T) {
+	led := filepath.Join(t.TempDir(), "ledger.jsonl")
+
+	empty := run(t, "head", "-ledger", led)
+	if empty.code != 0 || strings.TrimSpace(empty.stdout) != "0 "+ledger.GenesisHash+" -" {
+		t.Fatalf("empty head: exit %d, stdout %q, stderr %q", empty.code, empty.stdout, empty.stderr)
+	}
+
+	recordFixture(t, led)
+	text := run(t, "head", "-ledger", led)
+	fields := strings.Fields(text.stdout)
+	if text.code != 0 || len(fields) != 3 || fields[0] != "5" || len(fields[1]) != 64 || fields[2] != "2026-03-14T10:00:00Z" {
+		t.Fatalf("text head: exit %d, stdout %q", text.code, text.stdout)
+	}
+
+	js := run(t, "head", "-ledger", led, "-format", "json")
+	var h struct {
+		Seq  int    `json:"seq"`
+		Hash string `json:"hash"`
+		At   string `json:"at"`
+	}
+	if err := json.Unmarshal([]byte(js.stdout), &h); err != nil {
+		t.Fatalf("head json: %v\n%s", err, js.stdout)
+	}
+	if h.Seq != 5 || h.Hash != fields[1] || h.At != "2026-03-14T10:00:00Z" {
+		t.Errorf("json head = %+v", h)
+	}
+
+	if r := run(t, "head", "-ledger", led, "-format", "yaml"); r.code != 1 {
+		t.Errorf("unknown format exited %d, want 1", r.code)
+	}
+}
+
+func TestHeadRefusesABrokenChain(t *testing.T) {
+	led := filepath.Join(t.TempDir(), "ledger.jsonl")
+	recordFixture(t, led)
+	raw, err := os.ReadFile(led)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := strings.Replace(string(raw), `"author":"alice"`, `"author":"mallory"`, 1)
+	if err := os.WriteFile(led, []byte(tampered), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := run(t, "head", "-ledger", led); r.code != exitBlocked || r.stdout != "" {
+		t.Fatalf("head on a broken chain: exit %d, stdout %q", r.code, r.stdout)
+	}
+}
+
+func TestVerifyExpectHeadCatchesARecomputedChain(t *testing.T) {
+	led := filepath.Join(t.TempDir(), "ledger.jsonl")
+	recordFixture(t, led)
+	anchored := strings.Fields(run(t, "head", "-ledger", led).stdout)[1]
+
+	ok := run(t, "verify", "-ledger", led, "-expect-head", anchored, "-expect-seq-min", "5")
+	if ok.code != 0 || !strings.Contains(ok.stdout, "1 anchored head(s) reached") {
+		t.Fatalf("verify against its own head: exit %d, %s%s", ok.code, ok.stdout, ok.stderr)
+	}
+
+	// Appending more keeps the old anchor reachable.
+	if r := run(t, "record", "-plan", testdata("plan-additive.json"), "-config", testdata(".tf-ledger.yml"),
+		"-ledger", led, "-all", "-repo", "acme/platform", "-pr", "43", "-commit", "feedface",
+		"-author", "alice", "-quiet"); r.code != 0 {
+		t.Fatalf("second record exited %d: %s", r.code, r.stderr)
+	}
+	if r := run(t, "verify", "-ledger", led, "-expect-head", anchored); r.code != 0 {
+		t.Fatalf("verify after append: exit %d: %s", r.code, r.stderr)
+	}
+
+	// An admin rewrites an entry and recomputes every hash after it.
+	entries, err := ledger.Open(led).All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries[0].Author = "mallory"
+	prev := ledger.GenesisHash
+	var buf strings.Builder
+	for i := range entries {
+		entries[i].PrevHash = prev
+		entries[i].Hash = entries[i].ComputeHash()
+		prev = entries[i].Hash
+		b, err := json.Marshal(entries[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf.Write(b)
+		buf.WriteByte('\n')
+	}
+	if err := os.WriteFile(led, []byte(buf.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if r := run(t, "verify", "-ledger", led); r.code != 0 {
+		t.Fatalf("without an anchor the forgery should still verify (that is the gap): exit %d", r.code)
+	}
+	bad := run(t, "verify", "-ledger", led, "-expect-head", anchored)
+	if bad.code != exitBlocked || !strings.Contains(bad.stderr, "no longer reaches the anchored head") {
+		t.Fatalf("verify with the anchor: exit %d, stderr %q", bad.code, bad.stderr)
+	}
+}
+
+func TestVerifyExpectSeqMinCatchesTruncation(t *testing.T) {
+	led := filepath.Join(t.TempDir(), "ledger.jsonl")
+	recordFixture(t, led)
+	raw, err := os.ReadFile(led)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.SplitAfter(string(raw), "\n")
+	if err := os.WriteFile(led, []byte(strings.Join(lines[:3], "")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := run(t, "verify", "-ledger", led, "-expect-seq-min", "5")
+	if r.code != exitBlocked || !strings.Contains(r.stderr, "at least 5") {
+		t.Fatalf("exit %d, stderr %q", r.code, r.stderr)
+	}
+	// A short hash is a usage error, not a verdict about the ledger.
+	if r := run(t, "verify", "-ledger", led, "-expect-head", "abc123"); r.code != 1 {
+		t.Errorf("a short anchor hash exited %d, want 1", r.code)
 	}
 }
 
