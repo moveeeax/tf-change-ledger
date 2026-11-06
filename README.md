@@ -23,6 +23,7 @@ Early. Everything in this repository works end to end and is tested:
 | `.tf-ledger.yml` protected-resource gate | done |
 | Sticky pull request comment (Markdown) | done |
 | Append-only, hash-chained ledger + `verify` | done |
+| Head anchoring: `head`, `verify -expect-head` | done |
 | CSV / JSON export with date, repo and action filters | done |
 | GitHub App, hosted API, Postgres, org dashboard, billing | not here — see [Not built yet](#not-built-yet) |
 
@@ -178,6 +179,69 @@ in place, deleting one, or reordering the file all break the chain, and `verify`
 names the entry where it broke. There is no update and no delete: correcting a
 mistake means appending, exactly as in a paper ledger.
 
+**6. Anchor the head outside the file.** The chain has a limit: whoever can
+write `ledger.jsonl` can also rewrite an entry and recompute every hash after
+it, and `verify` alone will call the result intact. Against that editor (most
+likely an admin) the defence is to publish the head somewhere they cannot
+rewrite, then check later that the chain still reaches it.
+
+```sh
+"$TFCL" head -ledger ledger.jsonl
+"$TFCL" head -ledger ledger.jsonl -format json
+```
+
+```
+5 220cf000d09f… 2026-07-26T01:36:27Z
+{"seq":5,"hash":"220cf000d09f…","at":"2026-07-26T01:36:27Z"}
+```
+
+(Hashes shortened here; `head` prints all 64 characters, and only a full hash
+is accepted as an anchor.) `head` verifies the chain first and exits `2`
+instead of printing the head of a broken one.
+
+Later, pass every published head back to `verify`:
+
+```sh
+"$TFCL" verify -ledger ledger.jsonl -expect-head "$ANCHORED_HASH" -expect-seq-min 5
+```
+
+`-expect-head` is repeatable. Each hash must still be an entry of the chain, so
+appending more entries keeps an old anchor valid, while rewriting anything at
+or before it does not. `-expect-seq-min N` fails when the chain holds fewer
+than `N` entries, which catches truncation even where only the sequence number
+was kept. Either failure exits `2`, like a broken chain.
+
+Where to publish it is a choice of who must not be able to edit it. Two that
+need nothing beyond git:
+
+- A tag per recorded head, in a repository where tag rules block deletion and
+  force pushes. Sign it (`git tag -s`) if the runner has a signing key.
+- A trailer on the commit that adds the entries, when the ledger itself is
+  committed: `git commit -m "ledger: PR 128" -m "Ledger-Head: 5 <hash>"`.
+
+A workflow step after `record` that tags the head:
+
+```yaml
+- name: anchor the ledger head
+  run: |
+    read -r seq hash at < <(tf-change-ledger head -ledger ledger.jsonl)
+    git tag -a "ledger-head-$seq" -m "$hash" -m "recorded_at $at"
+    git push origin "ledger-head-$seq"
+```
+
+And the audit check that replays every tag:
+
+```sh
+args=()
+max=0
+for t in $(git tag -l 'ledger-head-*'); do
+  args+=(-expect-head "$(git tag -l --format='%(contents:subject)' "$t")")
+  seq=${t#ledger-head-}
+  [ "$seq" -gt "$max" ] && max=$seq
+done
+tf-change-ledger verify -ledger ledger.jsonl -expect-seq-min "$max" "${args[@]}"
+```
+
 ## Producing the inputs
 
 The plan JSON is whatever your pipeline already has:
@@ -242,7 +306,8 @@ ignored — a typo in a protection rule is a security bug.
 | `gate` | Evaluate `.tf-ledger.yml` against the plan and the acknowledgements | 0, 1, **2 = blocked** |
 | `record` | Append the merged pull request's destructive changes to the ledger | 0, 1 |
 | `export` | CSV or JSON, filtered by date range, repo, action, protection | 0, 1 |
-| `verify` | Re-walk the hash chain | 0, 1, **2 = broken** |
+| `verify` | Re-walk the hash chain; `-expect-head`, `-expect-seq-min` check published anchors | 0, 1, **2 = broken** |
+| `head` | Print the head (`seq hash at`, or `-format json`) of a verified chain | 0, 1, **2 = broken** |
 
 Run `tf-change-ledger <command> -h` for the flags of a command.
 

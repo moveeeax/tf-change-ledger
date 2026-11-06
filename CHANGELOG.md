@@ -8,6 +8,13 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `head` command: prints the ledger head as `seq hash at` or, with
+  `-format json`, `{seq, hash, at}`, after verifying the chain.
+- `verify -expect-head <hash>` (repeatable) and `-expect-seq-min N`: exit 2
+  when the chain no longer reaches a previously published head or has been
+  truncated, which catches a chain rewritten and recomputed by someone with
+  write access to the file. The README documents anchoring the head in a git
+  tag or commit trailer.
 - MIT `LICENSE`.
 - Dependabot configuration for GitHub Actions and Go modules.
 - This changelog.

@@ -25,6 +25,7 @@ Commands:
   record      Append the changes of a merged pull request to the ledger
   export      Export ledger entries as CSV or JSON
   verify      Re-walk the ledger hash chain and report tampering
+  head        Print the ledger head (seq, hash, time) to anchor elsewhere
   version     Print the version
 
 Run "tf-change-ledger <command> -h" for the flags of a command.
@@ -32,7 +33,8 @@ Run "tf-change-ledger <command> -h" for the flags of a command.
 Exit codes:
   0  success
   1  usage or runtime error
-  2  the gate is blocked, or the ledger chain is broken
+  2  the gate is blocked, the ledger chain is broken, or it no longer
+     reaches an anchored head
 `
 
 // exitBlocked is returned when a plan is held for acknowledgement or a ledger
@@ -58,6 +60,8 @@ func main() {
 		err = runExport(args)
 	case "verify":
 		err = runVerify(args)
+	case "head":
+		err = runHead(args)
 	case "version", "--version", "-v":
 		fmt.Println("tf-change-ledger " + version)
 	case "help", "-h", "--help":

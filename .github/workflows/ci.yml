@@ -93,6 +93,16 @@ jobs:
           ./tf-change-ledger verify -ledger "$RUNNER_TEMP/ledger.jsonl"
           ./tf-change-ledger export -ledger "$RUNNER_TEMP/ledger.jsonl" -protected-only
 
+      - name: an anchored head catches a recomputed chain
+        run: |
+          read -r seq hash at < <(./tf-change-ledger head -ledger "$RUNNER_TEMP/ledger.jsonl")
+          ./tf-change-ledger verify -ledger "$RUNNER_TEMP/ledger.jsonl" -expect-head "$hash" -expect-seq-min "$seq"
+          set +e
+          ./tf-change-ledger verify -ledger "$RUNNER_TEMP/ledger.jsonl" -expect-seq-min "$((seq + 1))"
+          code=$?
+          set -e
+          test "$code" -eq 2 || { echo "expected exit 2, got $code"; exit 1; }
+
       - name: verify detects tampering
         run: |
           sed -i 's/"author":"alice"/"author":"mallory"/' "$RUNNER_TEMP/ledger.jsonl"

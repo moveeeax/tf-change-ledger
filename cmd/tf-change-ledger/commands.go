@@ -372,8 +372,19 @@ func parseBound(s string, endOfDay bool) (time.Time, error) {
 func runVerify(args []string) error {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
 	ledgerPath := fs.String("ledger", "ledger.jsonl", "append-only ledger file")
+	var expectHeads stringList
+	fs.Var(&expectHeads, "expect-head", "full hash of a previously published head the chain must still reach (repeatable)")
+	seqMin := fs.Int("expect-seq-min", 0, "fail when the chain holds fewer entries than this")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *seqMin < 0 {
+		return errors.New("-expect-seq-min must not be negative")
+	}
+	for _, h := range expectHeads {
+		if !ledger.IsFullHash(strings.ToLower(strings.TrimSpace(h))) {
+			return fmt.Errorf("-expect-head %q is not a full 64-character hash (print one with: tf-change-ledger head)", h)
+		}
 	}
 	store := ledger.Open(*ledgerPath)
 	entries, err := store.All()
@@ -383,11 +394,54 @@ func runVerify(args []string) error {
 	if err := ledger.VerifyChain(entries); err != nil {
 		return blockedError{msg: "ledger verification failed: " + err.Error()}
 	}
-	head := ledger.GenesisHash
-	if len(entries) > 0 {
-		head = entries[len(entries)-1].Hash
+	anchors := ledger.Anchors{Hashes: expectHeads, SeqMin: *seqMin}
+	if err := ledger.CheckAnchors(entries, anchors); err != nil {
+		return blockedError{msg: "ledger verification failed: " + err.Error()}
 	}
-	fmt.Printf("ok: %d entries, chain intact, head %s\n", len(entries), head[:12])
+	head := ledger.HeadOf(entries)
+	msg := fmt.Sprintf("ok: %d entries, chain intact, head %s", len(entries), head.Hash[:12])
+	if n := len(expectHeads); n > 0 {
+		msg += fmt.Sprintf(", %d anchored head(s) reached", n)
+	}
+	fmt.Println(msg)
+	return nil
+}
+
+// runHead prints the head of a verified chain. Publishing it somewhere the
+// ledger's editors cannot rewrite is what turns "the chain is intact" into
+// "the chain is the one we saw then"; see ledger.CheckAnchors.
+func runHead(args []string) error {
+	fs := flag.NewFlagSet("head", flag.ExitOnError)
+	ledgerPath := fs.String("ledger", "ledger.jsonl", "append-only ledger file")
+	format := fs.String("format", "text", "text (seq hash at) or json")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *format != "text" && *format != "json" {
+		return fmt.Errorf("-format %q: want text or json", *format)
+	}
+	entries, err := ledger.Open(*ledgerPath).All()
+	if err != nil {
+		return err
+	}
+	// A head is only worth anchoring if the chain behind it holds.
+	if err := ledger.VerifyChain(entries); err != nil {
+		return blockedError{msg: "ledger verification failed: " + err.Error()}
+	}
+	head := ledger.HeadOf(entries)
+	if *format == "json" {
+		b, err := json.Marshal(head)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
+	at := "-"
+	if head.At != nil {
+		at = head.At.Format(time.RFC3339)
+	}
+	fmt.Printf("%d %s %s\n", head.Seq, head.Hash, at)
 	return nil
 }
 
